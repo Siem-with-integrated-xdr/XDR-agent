@@ -6,12 +6,17 @@
 #include <stdint.h>
 #include <time.h>
 #include <cJSON.h>
+#include <stdio.h>
+#include <stdarg.h>
+#include <signal.h>
 
 #define MAX_PACKET_SIZE 65536
 #define MAX_BUFFER_SIZE 10   // Number of packets to buffer before sending to the analysis engine
 #define FLUSH_INTERVAL 5     // Time interval (in seconds) to flush the buffer if not full
 
-// ----- Define Captured Packet Structure Globally -----
+// ---------------------- Packet Structures ----------------------
+
+// Captured packet structure.
 struct captured_packet {
     struct pcap_pkthdr header;
     u_char *packet;  // Dynamically allocated copy of the packet data
@@ -83,7 +88,7 @@ struct icmp6_header {
     uint16_t checksum;
 };
 
-// ----- Update packet_buffer to store captured_packet pointers -----
+// Packet buffer structure to hold captured packets.
 struct packet_buffer {
     struct captured_packet *packets[MAX_BUFFER_SIZE];
     int packet_count;
@@ -91,19 +96,94 @@ struct packet_buffer {
     time_t last_flush_time;
 };
 
-// Format IPv4 address into a string (keeping original formatting)
+// ---------------------- Global Resources & Cleanup ----------------------
+
+struct resources {
+    pcap_t *handle;
+    pcap_if_t *alldevs;
+#ifdef _WIN32
+    int winsock_initialized;
+#endif
+    struct packet_buffer *buffer;  // Dynamically allocated packet buffer
+};
+static struct resources g_resources = {0};
+
+void cleanup_resources() {
+    // Free any captured packets in the buffer.
+    if (g_resources.buffer) {
+        for (int i = 0; i < g_resources.buffer->packet_count; i++) {
+            if (g_resources.buffer->packets[i]) {
+                free(g_resources.buffer->packets[i]->packet);
+                free(g_resources.buffer->packets[i]);
+                g_resources.buffer->packets[i] = NULL;
+            }
+        }
+        free(g_resources.buffer);
+        g_resources.buffer = NULL;
+    }
+    if (g_resources.alldevs) {
+        pcap_freealldevs(g_resources.alldevs);
+        g_resources.alldevs = NULL;
+    }
+    if (g_resources.handle) {
+        pcap_close(g_resources.handle);
+        g_resources.handle = NULL;
+    }
+#ifdef _WIN32
+    if (g_resources.winsock_initialized) {
+        WSACleanup();
+        g_resources.winsock_initialized = 0;
+    }
+#endif
+}
+
+// Log error messages to "network_log.log" with a timestamp.
+void log_error(const char *format, ...) {
+    FILE *logFile = fopen("network_log.log", "a");
+    if (!logFile) {
+        fprintf(stderr, "Unable to open log file for writing\n");
+        return;
+    }
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char time_buf[64];
+    if (tm_info != NULL) {
+        strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+    } else {
+        strncpy(time_buf, "N/A", sizeof(time_buf));
+        time_buf[sizeof(time_buf)-1] = '\0';
+    }
+    fprintf(logFile, "[%s] ", time_buf);
+    va_list args;
+    va_start(args, format);
+    vfprintf(logFile, format, args);
+    va_end(args);
+    fprintf(logFile, "\n");
+    fclose(logFile);
+}
+
+// Crash handler: logs the error, calls cleanup, and exits.
+void crash_handler(int sig) {
+    log_error("Crash detected: signal %d", sig);
+    cleanup_resources();
+    exit(EXIT_FAILURE);
+}
+
+// ---------------------- Utility Functions ----------------------
+
+// Format IPv4 address into a string.
 void format_ipv4(uint32_t ip, char *buffer, size_t buflen) {
     sprintf(buffer, "%d.%d.%d.%d", ip & 0xFF, (ip >> 8) & 0xFF,
             (ip >> 16) & 0xFF, (ip >> 24) & 0xFF);
 }
 
-// Format MAC address into a string
+// Format MAC address into a string.
 void format_mac(const uint8_t *mac, char *buffer, size_t buflen) {
     sprintf(buffer, "%02X:%02X:%02X:%02X:%02X:%02X",
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
-// Format IPv6 address into a string (simple non-compressed format)
+// Format IPv6 address into a string (simple non-compressed format).
 void format_ipv6(const unsigned char *addr, char *buffer, size_t buflen) {
     sprintf(buffer,
             "%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X",
@@ -113,7 +193,7 @@ void format_ipv6(const unsigned char *addr, char *buffer, size_t buflen) {
             addr[12], addr[13], addr[14], addr[15]);
 }
 
-// Get the current time in microseconds since Unix epoch (January 1, 1970)
+// Get the current time in microseconds since Unix epoch.
 uint64_t get_precise_time_microseconds() {
     FILETIME ft;
     GetSystemTimePreciseAsFileTime(&ft);
@@ -125,7 +205,7 @@ uint64_t get_precise_time_microseconds() {
     return time100ns / 10;
 }
 
-// Format pcap timestamp into a string using strftime/localtime.
+// Format pcap timestamp into a string.
 void format_timestamp(const struct pcap_pkthdr *header, char *buffer, size_t buflen) {
     time_t t = (time_t) header->ts.tv_sec;
     struct tm *tm_info = localtime(&t);
@@ -165,6 +245,8 @@ const char* get_ipv6_next_header(uint8_t next_header) {
     }
 }
 
+// ---------------------- Packet Processing ----------------------
+
 // Process the buffered packets and return a JSON string.
 char* process_buffer(struct packet_buffer *buffer) {
     cJSON *root = cJSON_CreateObject();
@@ -188,26 +270,23 @@ char* process_buffer(struct packet_buffer *buffer) {
     cJSON_AddItemToObject(root, "number_of_packets", cJSON_CreateNumber(buffer->packet_count));
     cJSON_AddItemToObject(root, "packets", packet_array);
 
-    // Process each captured packet
+    // Process each captured packet.
     for (int i = 0; i < buffer->packet_count; i++) {
         struct captured_packet *cp = buffer->packets[i];
         const struct pcap_pkthdr *header = &cp->header;
         const u_char *packet = cp->packet;
         cJSON *packet_obj = cJSON_CreateObject();
 
-        // Add per-packet timestamp.
         char pkt_ts[64];
         format_timestamp(header, pkt_ts, sizeof(pkt_ts));
         cJSON_AddItemToObject(packet_obj, "packet_timestamp", cJSON_CreateString(pkt_ts));
 
-        // Ensure packet is long enough for Ethernet header
         if (header->len < sizeof(struct ethernet_header)) {
             cJSON_AddItemToObject(packet_obj, "error", cJSON_CreateString("Packet too short for Ethernet header"));
             cJSON_AddItemToArray(packet_array, packet_obj);
             continue;
         }
 
-        // Ethernet header.
         struct ethernet_header *eth = (struct ethernet_header *)packet;
         uint16_t eth_type = ntohs(eth->eth_type);
         char mac_buf[18];
@@ -218,9 +297,8 @@ char* process_buffer(struct packet_buffer *buffer) {
         cJSON_AddItemToObject(packet_obj, "ether_type", cJSON_CreateNumber(eth_type));
         cJSON_AddItemToObject(packet_obj, "packet_size", cJSON_CreateNumber(header->len));
 
-        // IPv4 processing.
+        // Process IPv4 packets.
         if (eth_type == 0x0800) {
-            // Ensure packet is long enough for minimal IPv4 header
             if (header->len < sizeof(struct ethernet_header) + sizeof(struct ip_header)) {
                 cJSON_AddItemToObject(packet_obj, "error", cJSON_CreateString("Packet too short for IPv4 header"));
                 cJSON_AddItemToArray(packet_array, packet_obj);
@@ -245,7 +323,6 @@ char* process_buffer(struct packet_buffer *buffer) {
             cJSON_AddItemToObject(packet_obj, "ip_offset", cJSON_CreateNumber(ntohs(ip->offset)));
 
             if (ip->protocol == 6) {  // TCP
-                // Check for minimal TCP header
                 if (header->len < sizeof(struct ethernet_header) + ip_header_len + sizeof(struct tcp_header)) {
                     cJSON_AddItemToObject(packet_obj, "error", cJSON_CreateString("Packet too short for TCP header"));
                     cJSON_AddItemToArray(packet_array, packet_obj);
@@ -417,27 +494,26 @@ char* process_buffer(struct packet_buffer *buffer) {
     return json_string;
 }
 
+// ---------------------- Packet Handler ----------------------
+
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
     struct packet_buffer *buffer = (struct packet_buffer *)args;
-
-    // Allocate a captured_packet structure
     struct captured_packet *cp = malloc(sizeof(struct captured_packet));
     if (!cp) {
-        fprintf(stderr, "Memory allocation error\n");
+        log_error("Memory allocation error for captured_packet");
+        fprintf(stderr, "Memory allocation error for captured_packet\n");
         return;
     }
-
-    // Allocate memory and copy packet data (fix: copy packet data to ensure it's valid later)
     cp->packet = malloc(header->caplen);
     if (!cp->packet) {
+        log_error("Memory allocation error for packet data");
         fprintf(stderr, "Memory allocation error for packet data\n");
         free(cp);
         return;
     }
     memcpy(cp->packet, packet, header->caplen);
-    cp->header = *header; // Copy the header
+    cp->header = *header;
 
-    // Use precise timestamp
     uint64_t preciseTimeMicro = get_precise_time_microseconds();
     cp->header.ts.tv_sec = (long)(preciseTimeMicro / 1000000);
     cp->header.ts.tv_usec = (long)(preciseTimeMicro % 1000000);
@@ -451,7 +527,6 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
         char *json_output = process_buffer(buffer);
         printf("JSON Output: \n%s\n", json_output);
         free(json_output);
-        // Free previously stored packets (fix: free both the packet data and the captured_packet struct)
         for (int i = 0; i < buffer->packet_count; i++) {
             free(buffer->packets[i]->packet);
             free(buffer->packets[i]);
@@ -480,6 +555,8 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
     }
 }
 
+// ---------------------- Interface Validation ----------------------
+
 int is_valid_interface(const char *desc) {
     if (!desc) return 0;
     if (strstr(desc, "WAN Miniport") || strstr(desc, "Virtual") ||
@@ -488,31 +565,37 @@ int is_valid_interface(const char *desc) {
     return 1;
 }
 
+// ---------------------- Main Function ----------------------
+
 int main() {
-    pcap_t *handle;
-    char errbuf[PCAP_ERRBUF_SIZE];
-    pcap_if_t *alldevs, *dev;
-    pcap_if_t *best_dev = NULL;
-    struct packet_buffer buffer = { .packet_count = 0, .total_size = 0, .last_flush_time = time(NULL) };
+    // Setup crash handlers.
+    signal(SIGSEGV, crash_handler);
+    signal(SIGABRT, crash_handler);
+    signal(SIGFPE, crash_handler);
+    signal(SIGILL, crash_handler);
 
 #ifdef _WIN32
-    // Initialize Winsock
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2,2), &wsaData) != 0) {
-        printf("WSAStartup failed.\n");
+        log_error("WSAStartup failed.");
+        fprintf(stderr, "WSAStartup failed.\n");
+        cleanup_resources();
         return 1;
     }
+    g_resources.winsock_initialized = 1;
 #endif
 
-    if (pcap_findalldevs(&alldevs, errbuf) == -1) {
-        printf("Error finding devices: %s\n", errbuf);
-#ifdef _WIN32
-        WSACleanup();
-#endif
+    char errbuf[PCAP_ERRBUF_SIZE];
+
+    if (pcap_findalldevs(&g_resources.alldevs, errbuf) == -1) {
+        log_error("Error finding devices: %s", errbuf);
+        fprintf(stderr, "Error finding devices: %s\n", errbuf);
+        cleanup_resources();
         return 1;
     }
 
-    for (dev = alldevs; dev; dev = dev->next) {
+    pcap_if_t *dev, *best_dev = NULL;
+    for (dev = g_resources.alldevs; dev; dev = dev->next) {
         if (is_valid_interface(dev->description)) {
             best_dev = dev;
             break;
@@ -520,53 +603,52 @@ int main() {
     }
 
     if (!best_dev) {
-        printf("No suitable network interface found.\n");
-        pcap_freealldevs(alldevs);
-#ifdef _WIN32
-        WSACleanup();
-#endif
+        log_error("No suitable network interface found.");
+        fprintf(stderr, "No suitable network interface found.\n");
+        cleanup_resources();
         return 1;
     }
 
-    handle = pcap_open_live(best_dev->name, MAX_PACKET_SIZE, 1, 1000, errbuf);
-    if (!handle) {
-        printf("Error opening device: %s\n", errbuf);
-        pcap_freealldevs(alldevs);
-#ifdef _WIN32
-        WSACleanup();
-#endif
+    g_resources.handle = pcap_open_live(best_dev->name, MAX_PACKET_SIZE, 1, 1000, errbuf);
+    if (!g_resources.handle) {
+        log_error("Error opening device: %s", errbuf);
+        fprintf(stderr, "Error opening device: %s\n", errbuf);
+        cleanup_resources();
         return 1;
     }
+
+    // Allocate and initialize the packet buffer.
+    g_resources.buffer = malloc(sizeof(struct packet_buffer));
+    if (!g_resources.buffer) {
+        log_error("Failed to allocate memory for packet buffer.");
+        fprintf(stderr, "Failed to allocate memory for packet buffer.\n");
+        cleanup_resources();
+        return 1;
+    }
+    g_resources.buffer->packet_count = 0;
+    g_resources.buffer->total_size = 0;
+    g_resources.buffer->last_flush_time = time(NULL);
 
     printf("Capturing packets...\n");
-    if (pcap_loop(handle, 0, packet_handler, (u_char *)&buffer) < 0) {
-        printf("Error capturing packets: %s\n", pcap_geterr(handle));
-        pcap_close(handle);
-        pcap_freealldevs(alldevs);
-#ifdef _WIN32
-        WSACleanup();
-#endif
+    if (pcap_loop(g_resources.handle, 0, packet_handler, (u_char *)g_resources.buffer) < 0) {
+        log_error("Error capturing packets: %s", pcap_geterr(g_resources.handle));
+        fprintf(stderr, "Error capturing packets: %s\n", pcap_geterr(g_resources.handle));
+        cleanup_resources();
         return 1;
     }
 
-    // Final flush for any remaining packets in the buffer.
-    if (buffer.packet_count > 0) {
+    // Final flush for any remaining packets.
+    if (g_resources.buffer->packet_count > 0) {
         printf("Final flush of buffer...\n");
-        char *json_output = process_buffer(&buffer);
+        char *json_output = process_buffer(g_resources.buffer);
         printf("JSON Output: \n%s\n", json_output);
         free(json_output);
-        for (int i = 0; i < buffer.packet_count; i++) {
-            free(buffer.packets[i]->packet);
-            free(buffer.packets[i]);
+        for (int i = 0; i < g_resources.buffer->packet_count; i++) {
+            free(g_resources.buffer->packets[i]->packet);
+            free(g_resources.buffer->packets[i]);
         }
     }
 
-    pcap_freealldevs(alldevs);
-    pcap_close(handle);
-
-#ifdef _WIN32
-    WSACleanup();
-#endif
-
+    cleanup_resources();
     return 0;
 }

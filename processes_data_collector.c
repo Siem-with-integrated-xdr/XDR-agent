@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <time.h>
+#include <zmq.h>
 
 //------------------------------------------------------------------------------
 // Logging helper: Writes timestamped error messages to process_log.log.
@@ -37,6 +38,18 @@ void log_error(const char *format, ...) {
     
     fprintf(f, "\n");
     fclose(f);
+}
+
+// Get the current time in microseconds since Unix epoch.
+uint64_t get_precise_time_microseconds() {
+    FILETIME ft;
+    GetSystemTimePreciseAsFileTime(&ft);
+    ULARGE_INTEGER uli;
+    uli.LowPart = ft.dwLowDateTime;
+    uli.HighPart = ft.dwHighDateTime;
+    const uint64_t EPOCH_DIFF = 11644473600ULL * 10000000ULL;
+    uint64_t time100ns = uli.QuadPart - EPOCH_DIFF;
+    return time100ns / 10;
 }
 
 // Forward declaration of getProcessPath
@@ -107,7 +120,7 @@ BOOL getProcessOwner(HANDLE hProcess, char *owner, DWORD ownerSize) {
     if (!LookupAccountSidA(NULL, pTokenUser->User.Sid, name, &nameSize, domain, &domainSize, &sidType)) {
         log_error("getProcessOwner: LookupAccountSidA failed.");
         free(pTokenUser);
-       	CloseHandle(hToken);
+        CloseHandle(hToken);
         return FALSE;
     }
     
@@ -189,7 +202,36 @@ cJSON* createProcessJsonDetailed(DWORD pid, DWORD ppid, const char* name, const 
 }
 
 //------------------------------------------------------------------------------
-// Takes an initial snapshot of current processes and prints a JSON array.
+// Global ZeroMQ context and sender socket.
+static void *zmq_context = NULL;
+static void *zmq_sender = NULL;
+
+//------------------------------------------------------------------------------
+// Helper: Send a JSON string over ZeroMQ using the zmq_msg_t API.
+int send_zmq_message(const char *json_str) {
+    if (!zmq_sender) {
+        log_error("send_zmq_message: ZeroMQ sender socket not initialized.");
+        return -1;
+    }
+    size_t msg_size = strlen(json_str);
+    zmq_msg_t msg;
+    if (zmq_msg_init_size(&msg, msg_size) != 0) {
+        log_error("send_zmq_message: zmq_msg_init_size failed.");
+        return -1;
+    }
+    memcpy(zmq_msg_data(&msg), json_str, msg_size);
+    int rc = zmq_msg_send(&msg, zmq_sender, 0);
+    if (rc == -1) {
+        log_error("send_zmq_message: zmq_msg_send failed.");
+        zmq_msg_close(&msg);
+        return -1;
+    }
+    zmq_msg_close(&msg);
+    return 0;
+}
+
+//------------------------------------------------------------------------------
+// Takes an initial snapshot of current processes and sends a JSON array.
 void initialSnapshot() {
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnapshot == INVALID_HANDLE_VALUE) {
@@ -254,7 +296,6 @@ void initialSnapshot() {
             log_error("initialSnapshot: OpenProcess failed for PID %lu.", (unsigned long)pe.th32ProcessID);
         }
         
-        // Use the thread count from PROCESSENTRY32.
         unsigned long threadCount = pe.cntThreads;
         DWORD moduleCount = getModuleCount(pe.th32ProcessID);
         
@@ -271,7 +312,10 @@ void initialSnapshot() {
     
     char *jsonString = cJSON_Print(jsonArray);
     if (jsonString) {
-        printf("Initial Process Snapshot:\n%s\n", jsonString);
+        // Instead of printing, send via ZeroMQ.
+        if (send_zmq_message(jsonString) != 0) {
+            fprintf(stderr, "Error: Failed to send initial snapshot via ZeroMQ.\n");
+        }
         free(jsonString);
     } else {
         log_error("initialSnapshot: cJSON_Print failed.");
@@ -282,7 +326,7 @@ void initialSnapshot() {
 }
 
 //------------------------------------------------------------------------------
-// Monitors process creation events using WMI and prints each new process as JSON.
+// Monitors process creation events using WMI and sends each new process as JSON.
 void monitorProcessCreationEvents() {
     HRESULT hr;
     hr = CoInitializeEx(0, COINIT_MULTITHREADED);
@@ -406,23 +450,35 @@ void monitorProcessCreationEvents() {
                 hr = pTargetInstance->lpVtbl->Get(pTargetInstance, L"CommandLine", 0, &vtCmd, 0, 0);
                 hr = pTargetInstance->lpVtbl->Get(pTargetInstance, L"ThreadCount", 0, &vtThreadCount, 0, 0);
                 
-                // Prepare a timestamp.
-                SYSTEMTIME st;
-                GetSystemTime(&st);
+                // Prepare a precise timestamp.
                 char timestamp[64];
-                snprintf(timestamp, sizeof(timestamp), "%04d-%02d-%02dT%02d:%02d:%02dZ",
-                         st.wYear, st.wMonth, st.wDay,
-                         st.wHour, st.wMinute, st.wSecond);
+                uint64_t preciseTimeMicro = get_precise_time_microseconds();
+                time_t sec = (time_t)(preciseTimeMicro / 1000000);
+                long usec = (long)(preciseTimeMicro % 1000000);
+                struct tm *tm_info = localtime(&sec);
+                if (tm_info != NULL) {
+                    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
+                } else {
+                    strncpy(timestamp, "N/A", sizeof(timestamp));
+                    timestamp[sizeof(timestamp) - 1] = '\0';
+                }
+                char usec_str[16];
+                sprintf(usec_str, ".%06ld", usec);
+                strncat(timestamp, usec_str, sizeof(timestamp) - strlen(timestamp) - 1);
                 
-                // Safely extract PID and PPID.
+                // Extract PID.
                 DWORD pid = 0, ppid = 0;
                 if (vtPid.vt == VT_UINT || vtPid.vt == VT_UI4)
                     pid = vtPid.uintVal;
+                else if (vtPid.vt == VT_I4)
+                    pid = (DWORD)vtPid.intVal;
                 else
                     log_error("monitorProcessCreationEvents: Unexpected vtPid type for event.");
                 
                 if (vtPPid.vt == VT_UINT || vtPPid.vt == VT_UI4)
                     ppid = vtPPid.uintVal;
+                else if (vtPPid.vt == VT_I4)
+                    ppid = (DWORD)vtPPid.intVal;
                 else
                     log_error("monitorProcessCreationEvents: Unexpected vtPPid type for event.");
                 
@@ -430,14 +486,14 @@ void monitorProcessCreationEvents() {
                 char szProcessPath[256] = {0};
                 char commandLine[1024] = {0};
                 char owner[256] = "N/A";
-                // Check that vtName is a valid BSTR.
+                // Check vtName.
                 if (vtName.vt == VT_BSTR && vtName.bstrVal != NULL) {
                     wcstombs(processName, vtName.bstrVal, sizeof(processName));
                 } else {
                     snprintf(processName, sizeof(processName), "N/A");
                     log_error("monitorProcessCreationEvents: vtName is not a valid BSTR for PID %lu.", (unsigned long)pid);
                 }
-                // Check CommandLine variant.
+                // Check CommandLine.
                 if (vtCmd.vt == VT_BSTR && vtCmd.bstrVal != NULL) {
                     wcstombs(commandLine, vtCmd.bstrVal, sizeof(commandLine));
                 } else {
@@ -457,9 +513,7 @@ void monitorProcessCreationEvents() {
                         snprintf(memoryUsage, sizeof(memoryUsage), "N/A");
                         log_error("monitorProcessCreationEvents: GetProcessMemoryInfo failed for PID %lu.", (unsigned long)pid);
                     }
-                    // Get owner.
                     getProcessOwner(hProc, owner, sizeof(owner));
-                    // Get CPU times.
                     FILETIME ftCreation, ftExit, ftKernel, ftUser;
                     if (GetProcessTimes(hProc, &ftCreation, &ftExit, &ftKernel, &ftUser)) {
                         kernelTime = getTimeInSeconds(ftKernel);
@@ -474,8 +528,8 @@ void monitorProcessCreationEvents() {
                 }
                 
                 unsigned long threadCount = 0;
-                if (vtThreadCount.vt == VT_I4) {
-                    threadCount = (unsigned long)vtThreadCount.intVal;
+                if (vtThreadCount.vt == VT_I4 || vtThreadCount.vt == VT_UI4) {
+                    threadCount = (unsigned long)(vtThreadCount.vt == VT_I4 ? vtThreadCount.intVal : vtThreadCount.uintVal);
                 } else {
                     log_error("monitorProcessCreationEvents: Unexpected vtThreadCount type for PID %lu.", (unsigned long)pid);
                 }
@@ -489,7 +543,10 @@ void monitorProcessCreationEvents() {
                 if (jsonEvent) {
                     char *jsonString = cJSON_Print(jsonEvent);
                     if (jsonString) {
-                        printf("%s\n", jsonString);
+                        // Send via ZeroMQ.
+                        if (send_zmq_message(jsonString) != 0) {
+                            fprintf(stderr, "Error: Failed to send process event for PID %lu via ZeroMQ.\n", (unsigned long)pid);
+                        }
                         free(jsonString);
                     } else {
                         log_error("monitorProcessCreationEvents: cJSON_Print failed for event PID %lu.", (unsigned long)pid);
@@ -516,11 +573,35 @@ void monitorProcessCreationEvents() {
 }
 
 int main(void) {
+    // Initialize ZeroMQ context and PUSH socket.
+    zmq_context = zmq_ctx_new();
+    if (!zmq_context) {
+        log_error("main: Failed to create ZeroMQ context.");
+        return 1;
+    }
+    zmq_sender = zmq_socket(zmq_context, ZMQ_PUSH);
+    if (!zmq_sender) {
+        log_error("main: Failed to create ZeroMQ sender socket.");
+        zmq_ctx_destroy(zmq_context);
+        return 1;
+    }
+    // Connect to the receiver endpoint (adjust as needed).
+    if (zmq_connect(zmq_sender, "tcp://localhost:5555") != 0) {
+        log_error("main: Failed to connect ZeroMQ sender socket.");
+        zmq_close(zmq_sender);
+        zmq_ctx_destroy(zmq_context);
+        return 1;
+    }
+    
     // Take an initial snapshot of processes.
     initialSnapshot();
     
     // Monitor for new process creation events.
     monitorProcessCreationEvents();
+    
+    // Cleanup ZeroMQ resources.
+    zmq_close(zmq_sender);
+    zmq_ctx_destroy(zmq_context);
     
     return 0;
 }

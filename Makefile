@@ -1,4 +1,4 @@
-.PHONY: all network parent process compressor clean encryptor events
+.PHONY: all network parent process compressor clean encryptor events health
 
 CC = gcc
 CFLAGS = -Wall -g
@@ -35,6 +35,7 @@ PROCESS_TARGET = processes_collector.exe
 COMPRESSOR_TARGET = compressor.exe
 ENCRYPTOR_TARGET = encryptor.exe
 EVENTS_TARGET = events_data_collector.exe
+HEALTH_TARGET = system_health.exe
 
 PARENT_SRC = parent.c
 PARENT_OBJ = $(PARENT_SRC:.c=.o)
@@ -53,6 +54,9 @@ ENCRYPTOR_OBJ = $(ENCRYPTOR_SRC:.c=.o)
 
 EVENTS_SRC = events_data_collector.c
 EVENTS_OBJ = $(EVENTS_SRC:.c=.o)
+
+HEALTH_SRC = system_health.c
+HEALTH_OBJ = $(HEALTH_SRC:.c=.o)
 
 # Rule for compiling  parent object file
 $(PARENT_OBJ): $(PARENT_SRC)
@@ -76,6 +80,10 @@ $(ENCRYPTOR_OBJ): $(ENCRYPTOR_SRC)
 
 # Rule for compiling events object file
 $(EVENTS_OBJ): $(EVENTS_SRC)
+	$(CC) $(CFLAGS) $(ZMQ_INC) $(CJSON_INC) -c $< -o $@
+
+# Rule for compiling health object file
+$(HEALTH_OBJ): $(HEALTH_SRC)
 	$(CC) $(CFLAGS) $(ZMQ_INC) $(CJSON_INC) -c $< -o $@
 
 # Build for subprocess_manager.exe
@@ -102,8 +110,12 @@ $(ENCRYPTOR_TARGET): $(ENCRYPTOR_OBJ)
 $(EVENTS_TARGET): $(EVENTS_OBJ)
 	$(CC) $(EVENTS_OBJ) -o $(EVENTS_TARGET) $(ZMQ_LIB) $(CJSON_LIB) $(WINEVENT_LIB)
 
+# Build for system_health.exe
+$(HEALTH_TARGET): $(HEALTH_OBJ)
+	$(CC) $(HEALTH_OBJ) -o $(HEALTH_TARGET) $(ZMQ_LIB) $(CJSON_LIB) 
+
 # Default target: build everything
-all: $(PARENT_TARGET) $(NETWORK_TARGET) $(PARENT_TARGET) $(PROCESS_TARGET) $(COMPRESSOR_TARGET) $(ENCRYPTOR_TARGET) $(EVENTS_TARGET)
+all: $(PARENT_TARGET) $(NETWORK_TARGET) $(PARENT_TARGET) $(PROCESS_TARGET) $(COMPRESSOR_TARGET) $(ENCRYPTOR_TARGET) $(EVENTS_TARGET) $(HEALTH_TARGET)
 
 # Build only the network_collector
 network: $(NETWORK_TARGET)
@@ -120,8 +132,11 @@ compressor: $(COMPRESSOR_TARGET)
 # Build only the encryptor
 encryptor: $(ENCRYPTOR_TARGET)
 
-# Build only the encryptor
+# Build only the event
 events: $(EVENTS_TARGET)
 
+# Build only the system_health
+health: $(HEALTH_TARGET)
+
 clean:
-	del $(PARENT_OBJ) $(PARENT_TARGET) $(NETWORK_OBJ) $(NETWORK_TARGET) $(PROCESS_OBJ) $(PROCESS_TARGET) $(COMPRESSOR_OBJ) $(COMPRESSOR_TARGET) $(ENCRYPTOR_OBJ) $(ENCRYPTOR_TARGET) $(EVENTS_OBJ) $(EVENTS_TARGET)
+	del $(PARENT_OBJ) $(PARENT_TARGET) $(NETWORK_OBJ) $(NETWORK_TARGET) $(PROCESS_OBJ) $(PROCESS_TARGET) $(COMPRESSOR_OBJ) $(COMPRESSOR_TARGET) $(ENCRYPTOR_OBJ) $(ENCRYPTOR_TARGET) $(EVENTS_OBJ) $(EVENTS_TARGET) $(HELTH_OBJ) $(HELTH_TARGET)

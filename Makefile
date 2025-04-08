@@ -23,7 +23,7 @@ ZLIB_INC = -I"lib\zstd\lib"
 ZLIB_LIB = -L"lib\zstd\lib\dll" -lzstd
 
 # Paths for openssl
-OPENSSL_INC = -I"lib\openssl-minimal\include\openssl"
+OPENSSL_INC = -I"lib\openssl-minimal\include"
 OPENSSL_LIB = -L"lib\openssl-minimal\lib64" -lcrypto
 
 WINEVENT_LIB = -lwevtapi

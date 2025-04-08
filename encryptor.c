@@ -5,8 +5,8 @@
 #include <signal.h>
 #include <errno.h>
 #include <time.h>
-#include <evp.h>
-#include <err.h>
+#include <openssl/evp.h>
+#include <openssl/err.h>
 
 #define KEY_LENGTH 32   // AES-256 key length in bytes
 #define IV_LENGTH 16    // AES block size for CBC mode

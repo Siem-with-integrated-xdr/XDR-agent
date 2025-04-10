@@ -4,7 +4,7 @@
 #include <signal.h>
 #include <time.h>
 
-#define NUM_PROCESSES 6
+#define NUM_PROCESSES 8
 #define LOG_FILE "parent.log"
 
 // List of process executables
@@ -14,7 +14,9 @@ const char *processes[NUM_PROCESSES] = {
     "events_data_collector.exe",
     "processes_collector.exe",
     "network_collector.exe",
-    "system_health.exe"
+    "system_health.exe",
+    "file_scanner.exe",
+    "file_integrity.exe"
 };
 
 // Global variables for process information
@@ -22,7 +24,7 @@ PROCESS_INFORMATION pi[NUM_PROCESSES];
 HANDLE handles[NUM_PROCESSES];  // Store only process handles
 HANDLE jobObject;  // Job Object to manage all child processes
 
-// Logging function
+// Logging function to file
 void log_message(const char *message) {
     FILE *log_file = fopen(LOG_FILE, "a");
     if (log_file) {
@@ -36,7 +38,7 @@ void log_message(const char *message) {
     }
 }
 
-// Function to create and run a subprocess
+// Function to create and run a subprocess using CreateProcess
 void runSubProcess(const char *program, PROCESS_INFORMATION *pi, DWORD creationFlags) {
     STARTUPINFO si;
     ZeroMemory(&si, sizeof(si));
@@ -57,12 +59,48 @@ void runSubProcess(const char *program, PROCESS_INFORMATION *pi, DWORD creationF
         log_message(success_msg);
         printf("%s\n", success_msg);
 
+        // Assign the process to the job object for automatic cleanup.
         AssignProcessToJobObject(jobObject, pi->hProcess);
     }
 }
 
 int main() {
-    // Create a Job Object with automatic child process cleanup
+    // --- Enable Required Privileges in Parent Process ---
+    // Enable SE_BACKUP_NAME so that child processes inherit this privilege.
+    HANDLE token;
+    TOKEN_PRIVILEGES tp;
+    LUID luid;
+    
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) {
+        printf("OpenProcessToken error: %lu\n", GetLastError());
+        return 1;
+    }
+    
+    if (!LookupPrivilegeValue(NULL, SE_BACKUP_NAME, &luid)) {
+        printf("LookupPrivilegeValue error: %lu\n", GetLastError());
+        CloseHandle(token);
+        return 1;
+    }
+    
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Luid = luid;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    
+    if (!AdjustTokenPrivileges(token, FALSE, &tp, sizeof(tp), NULL, NULL)) {
+        printf("AdjustTokenPrivileges error: %lu\n", GetLastError());
+        CloseHandle(token);
+        return 1;
+    }
+    
+    if (GetLastError() == ERROR_NOT_ALL_ASSIGNED) {
+        printf("The token does not have the specified privilege.\n");
+        CloseHandle(token);
+        return 1;
+    }
+    
+    CloseHandle(token);
+
+    // --- Create a Job Object with automatic child process cleanup ---
     jobObject = CreateJobObject(NULL, NULL);
     if (jobObject == NULL) {
         log_message("Failed to create Job Object.");
@@ -80,20 +118,22 @@ int main() {
         return 1;
     }
 
-    // Start all processes
+    // --- Start all child processes ---
     for (int i = 0; i < NUM_PROCESSES; i++) {
+        // Use CREATE_NO_WINDOW flag for all processes except "encryptor.exe"
         DWORD flags = (strcmp(processes[i], "encryptor.exe") == 0) ? 0 : CREATE_NO_WINDOW;
         runSubProcess(processes[i], &pi[i], flags);
-        handles[i] = pi[i].hProcess;  // Store only HANDLE (fix)
+        handles[i] = pi[i].hProcess;  // Store only the process HANDLE
     }
 
-    // Monitor and restart crashed processes
+    // --- Monitor and restart crashed processes ---
     while (1) {
-        DWORD result = WaitForMultipleObjects(NUM_PROCESSES, handles, FALSE, 1000);  // FIXED
+        // Check for any process exit (timeout 1000 ms)
+        DWORD result = WaitForMultipleObjects(NUM_PROCESSES, handles, FALSE, 1000);
 
         if (result >= WAIT_OBJECT_0 && result < WAIT_OBJECT_0 + NUM_PROCESSES) {
-            int index = result - WAIT_OBJECT_0; // Identify which process exited
-            
+            int index = result - WAIT_OBJECT_0;  // Identify the crashed process
+
             char crash_msg[256];
             snprintf(crash_msg, sizeof(crash_msg), "Process %s has crashed. Restarting...", processes[index]);
             log_message(crash_msg);
@@ -106,7 +146,7 @@ int main() {
 
             DWORD flags = (strcmp(processes[index], "encryptor.exe") == 0) ? 0 : CREATE_NO_WINDOW;
             runSubProcess(processes[index], &pi[index], flags);
-            handles[index] = pi[index].hProcess;  // FIXED
+            handles[index] = pi[index].hProcess;  // Update with new process handle
         }
     }
 

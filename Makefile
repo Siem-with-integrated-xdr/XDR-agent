@@ -1,4 +1,4 @@
-.PHONY: all network parent process compressor clean encryptor events health
+.PHONY: all network parent process compressor clean encryptor events health scanner integrity
 
 CC = gcc
 CFLAGS = -Wall -g
@@ -11,6 +11,8 @@ CJSON_LIB = -L"lib/cJson" -lcjson
 # Paths for pcap
 PCAP_INC = -I"lib/npcap-sdk-1.15/Include"
 PCAP_LIB = -L"lib/npcap-sdk-1.15/Lib/x64" -l wpcap -l Packet -l ws2_32
+
+WIN32_LIB = -l ws2_32
 
 ZMQ_INC = -I"lib\libzmq\include"
 ZMQ_LIB = -L"lib\libzmq\lib" -l:libzmq-v143-mt-gd-4_3_6.lib 
@@ -44,6 +46,8 @@ COMPRESSOR_TARGET = compressor.exe
 ENCRYPTOR_TARGET = encryptor.exe
 EVENTS_TARGET = events_data_collector.exe
 HEALTH_TARGET = system_health.exe
+SCANNER_TARGET = file_scanner.exe
+INTEGRITY_TARGET = file_integrity.exe
 
 PARENT_SRC = parent.c
 PARENT_OBJ = $(PARENT_SRC:.c=.o)
@@ -65,6 +69,12 @@ EVENTS_OBJ = $(EVENTS_SRC:.c=.o)
 
 HEALTH_SRC = system_health.c
 HEALTH_OBJ = $(HEALTH_SRC:.c=.o)
+
+SCANNER_SRC = file_scanner.c
+SCANNER_OBJ = $(SCANNER_SRC:.c=.o)
+
+INTEGRITY_SRC = file_integrity.c
+INTEGRITY_OBJ = $(INTEGRITY_SRC:.c=.o)
 
 # Rule for compiling  parent object file
 $(PARENT_OBJ): $(PARENT_SRC)
@@ -94,13 +104,21 @@ $(EVENTS_OBJ): $(EVENTS_SRC)
 $(HEALTH_OBJ): $(HEALTH_SRC)
 	$(CC) $(CFLAGS) $(ZMQ_INC) $(CJSON_INC) -c $< -o $@
 
+# Rule for compiling scanner object file
+$(SCANNER_OBJ): $(SCANNER_SRC)
+	$(CC) $(CFLAGS) $(ZMQ_INC) $(CJSON_INC) -c $< -o $@
+
+# Rule for compiling integrity object file
+$(INTEGRITY_OBJ): $(INTEGRITY_SRC)
+	$(CC) $(CFLAGS) $(ZMQ_INC) $(CJSON_INC) $(OPENSSL_INC) -c $< -o $@
+
 # Build for subprocess_manager.exe
 $(PARENT_TARGET): $(PARENT_OBJ)
 	$(CC) $(PARENT_OBJ) -o $(PARENT_TARGET) $(LDFLAGS)
 
 # Build for network_collector.exe
 $(NETWORK_TARGET): $(NETWORK_OBJ)
-	$(CC) $(NETWORK_OBJ) -o $(NETWORK_TARGET) $(CJSON_LIB) $(PCAP_LIB) $(ZMQ_LIB)
+	$(CC) $(NETWORK_OBJ) -o $(NETWORK_TARGET) $(CJSON_LIB) $(PCAP_LIB) $(ZMQ_LIB) $(WIN32_LIB)
 
 # Build for processes_collector.exe
 $(PROCESS_TARGET): $(PROCESS_OBJ)
@@ -122,8 +140,16 @@ $(EVENTS_TARGET): $(EVENTS_OBJ)
 $(HEALTH_TARGET): $(HEALTH_OBJ)
 	$(CC) $(HEALTH_OBJ) -o $(HEALTH_TARGET) $(ZMQ_LIB) $(CJSON_LIB) 
 
+# Build for file_sanner.exe
+$(SCANNER_TARGET): $(SCANNER_OBJ)
+	$(CC) $(SCANNER_OBJ) -o $(SCANNER_TARGET) $(ZMQ_LIB) $(CJSON_LIB) $(WIN32_LIB)
+
+# Build for file_integrity.exe
+$(INTEGRITY_TARGET): $(INTEGRITY_OBJ)
+	$(CC) $(INTEGRITY_OBJ) -o $(INTEGRITY_TARGET) $(ZMQ_LIB) $(CJSON_LIB) $(OPENSSL_LIB)
+
 # Default target: build everything
-all: $(PARENT_TARGET) $(NETWORK_TARGET) $(PARENT_TARGET) $(PROCESS_TARGET) $(COMPRESSOR_TARGET) $(ENCRYPTOR_TARGET) $(EVENTS_TARGET) $(HEALTH_TARGET)
+all: $(PARENT_TARGET) $(NETWORK_TARGET) $(PARENT_TARGET) $(PROCESS_TARGET) $(COMPRESSOR_TARGET) $(ENCRYPTOR_TARGET) $(EVENTS_TARGET) $(HEALTH_TARGET) $(SCANNER_TARGET) $(INTEGRITY_TARGET)
 
 # Build only the network_collector
 network: $(NETWORK_TARGET)
@@ -146,5 +172,11 @@ events: $(EVENTS_TARGET)
 # Build only the system_health
 health: $(HEALTH_TARGET)
 
+# Build only the scanner
+scanner: $(SCANNER_TARGET)
+
+# Build only the integrity
+integrity: $(INTEGRITY_TARGET)
+
 clean:
-	del $(PARENT_OBJ) $(PARENT_TARGET) $(NETWORK_OBJ) $(NETWORK_TARGET) $(PROCESS_OBJ) $(PROCESS_TARGET) $(COMPRESSOR_OBJ) $(COMPRESSOR_TARGET) $(ENCRYPTOR_OBJ) $(ENCRYPTOR_TARGET) $(EVENTS_OBJ) $(EVENTS_TARGET) $(HELTH_OBJ) $(HELTH_TARGET)
+	del $(PARENT_OBJ) $(PARENT_TARGET) $(NETWORK_OBJ) $(NETWORK_TARGET) $(PROCESS_OBJ) $(PROCESS_TARGET) $(COMPRESSOR_OBJ) $(COMPRESSOR_TARGET) $(ENCRYPTOR_OBJ) $(ENCRYPTOR_TARGET) $(EVENTS_OBJ) $(EVENTS_TARGET) $(HELTH_OBJ) $(HELTH_TARGET) $(SCANNER_OBJ) $(SCANNER_TARGET) $(INTEGRITY_OBJ) $(INTEGRITY_TARGET)

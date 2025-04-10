@@ -705,7 +705,6 @@ int main() {
         return 1;
     }
 
-    printf("Capturing packets...\n");
     if (pcap_loop(g_resources.handle, 0, packet_handler, (u_char *)g_resources.buffer) < 0) {
         log_error("Error capturing packets: %s", pcap_geterr(g_resources.handle));
         fprintf(stderr, "Error capturing packets: %s\n", pcap_geterr(g_resources.handle));

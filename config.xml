@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <kafka>
+    <broker_ip>localhost</broker_ip>
+    <broker_port>9092</broker_port>
+  </kafka>
+</config>

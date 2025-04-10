@@ -9,7 +9,7 @@
 
 // Logging function that writes timestamped messages to compresso.log
 void log_error(const char *format, ...) {
-    FILE *logFile = fopen("compresso.log", "a");
+    FILE *logFile = fopen("compressor.log", "a");
     if (!logFile) {
         fprintf(stderr, "Unable to open log file for writing\n");
         return;

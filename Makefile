@@ -26,6 +26,14 @@ ZLIB_LIB = -L"lib\zstd\lib\dll" -lzstd
 OPENSSL_INC = -I"lib\openssl-minimal\include"
 OPENSSL_LIB = -L"lib\openssl-minimal\lib64" -lcrypto
 
+# Paths for rdkafka
+RDKAFKA_INC = -I"lib\librdkafka\bin"
+RDKAFKA_LIB = -L"lib\librdkafka\lib" -lrdkafka
+
+# Paths for libxml2
+LIBXML2_INC = -I"lib\libxml2-2.9.14\include"
+LIBXML2_LIB = -L"lib\libxml2-2.9.14\lib" -llibxml2
+
 WINEVENT_LIB = -lwevtapi
 
 # Targets
@@ -76,7 +84,7 @@ $(COMPRESSOR_OBJ): $(COMPRESSOR_SRC)
 
 # Rule for compiling encryptor object file
 $(ENCRYPTOR_OBJ): $(ENCRYPTOR_SRC)
-	$(CC) $(CFLAGS) $(ZMQ_INC) $(OPENSSL_INC) -c $< -o $@
+	$(CC) $(CFLAGS) $(ZMQ_INC) $(OPENSSL_INC) $(RDKAFKA_INC) $(LIBXML2_INC) -c $< -o $@
 
 # Rule for compiling events object file
 $(EVENTS_OBJ): $(EVENTS_SRC)
@@ -104,7 +112,7 @@ $(COMPRESSOR_TARGET): $(COMPRESSOR_OBJ)
 
 # Build for encryptor.exe
 $(ENCRYPTOR_TARGET): $(ENCRYPTOR_OBJ)
-	$(CC) $(ENCRYPTOR_OBJ) -o $(ENCRYPTOR_TARGET) $(ZMQ_LIB) $(OPENSSL_LIB)
+	$(CC) $(ENCRYPTOR_OBJ) -o $(ENCRYPTOR_TARGET) $(ZMQ_LIB) $(OPENSSL_LIB) $(RDKAFKA_LIB) $(LIBXML2_LIB)
 
 # Build for events_data_collector.exe
 $(EVENTS_TARGET): $(EVENTS_OBJ)

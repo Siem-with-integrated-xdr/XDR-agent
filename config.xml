@@ -3,5 +3,6 @@
   <kafka>
     <broker_ip>localhost</broker_ip>
     <broker_port>9092</broker_port>
+    <topic>encrypted_topic</topic>
   </kafka>
 </config>

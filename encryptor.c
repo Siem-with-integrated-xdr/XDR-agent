@@ -105,11 +105,12 @@ int aes_encrypt(const unsigned char *plaintext, int plaintext_len,
 typedef struct {
     char kafka_broker_ip[64];
     int kafka_broker_port;
+    char kafka_topic[64];  // New field for Kafka topic
 } Config;
 
 // ---------------------------------------------------------------------------
 // Function to load and parse the XML configuration file using libxml2.
-// Extracts the Kafka broker IP and port.
+// Extracts the Kafka broker IP, port, and topic.
 // ---------------------------------------------------------------------------
 int load_config(const char *filename, Config *config) {
     xmlDoc *doc = NULL;
@@ -150,6 +151,13 @@ int load_config(const char *filename, Config *config) {
                             config->kafka_broker_port = atoi((const char *)port_str);
                             xmlFree(port_str);
                         }
+                    } else if (strcmp((const char *)node->name, "topic") == 0) {
+                        xmlChar *topic = xmlNodeGetContent(node);
+                        if (topic) {
+                            strncpy(config->kafka_topic, (const char *)topic, sizeof(config->kafka_topic) - 1);
+                            config->kafka_topic[sizeof(config->kafka_topic) - 1] = '\0';
+                            xmlFree(topic);
+                        }
                     }
                 }
             }
@@ -186,14 +194,16 @@ int main(void) {
     if (load_config("config.xml", &config) == 0) {
         printf("Kafka Broker IP: %s\n", config.kafka_broker_ip);
         printf("Kafka Broker Port: %d\n", config.kafka_broker_port);
+        printf("Kafka Topic: %s\n", config.kafka_topic);
     } else {
         fprintf(stderr, "Error loading configuration file. Using defaults.\n");
         log_error("Error loading configuration file. Using defaults.");
         strcpy(config.kafka_broker_ip, "localhost");
         config.kafka_broker_port = 9092;
+        strcpy(config.kafka_topic, "encrypted_topic");
     }
     
-    // Build the bootstrap servers string (e.g., "192.168.1.100:9092")
+    // Build the bootstrap servers string (e.g., "localhost:9092")
     char bootstrap_servers[128];
     snprintf(bootstrap_servers, sizeof(bootstrap_servers), "%s:%d", 
              config.kafka_broker_ip, config.kafka_broker_port);
@@ -248,9 +258,8 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    // Create a Kafka topic object (change topic name if needed)
-    const char *kafka_topic = "encrypted_topic";
-    rd_kafka_topic_t *rkt = rd_kafka_topic_new(rk, kafka_topic, NULL);
+    // Create a Kafka topic object using the topic from XML configuration
+    rd_kafka_topic_t *rkt = rd_kafka_topic_new(rk, config.kafka_topic, NULL);
     if (!rkt) {
         char buf[256];
         snprintf(buf, sizeof(buf), "Failed to create Kafka topic object: %s",
@@ -325,7 +334,7 @@ int main(void) {
             log_error(kafka_err);
         } else {
             printf("Encrypted data of %d bytes sent to Kafka topic '%s'.\n",
-                   encrypted_size, kafka_topic);
+                   encrypted_size, config.kafka_topic);
         }
 
         // Free the encrypted data buffer (we used the copy flag)

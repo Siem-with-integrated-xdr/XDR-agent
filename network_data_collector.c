@@ -234,7 +234,7 @@ void format_timestamp(const struct pcap_pkthdr *header, char *buffer, size_t buf
         micro = 0;
     if (micro > 1000000)
         micro /= 1000;
-    char usec[8];
+    char usec[10];
     sprintf(usec, ".%06ld", micro);
     strncat(buffer, usec, buflen - strlen(buffer) - 1);
 }

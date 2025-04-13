@@ -1,6 +1,6 @@
 # XDR Agent for SIEM Server
 
-**XDR Agent for SIEM Server** is a modular and high-performance Windows-based solution that brings powerful Extended Detection and Response (XDR) capabilities to your Security Information and Event Management (SIEM) system. Designed for real-time system visibility, proactive monitoring, and secure data transmission, this agent suite transforms raw system activities into rich, structured telemetry for deep analysis and threat detection.
+This is a modular and high-performance Windows-based solution. Designed for real-time system visibility, proactive monitoring, and secure data transmission, this agent suite transforms raw system activities into rich, structured telemetry for deep analysis, threat detection, and response.
 
 ----------
 

@@ -194,27 +194,3 @@ This project is licensed under the **MIT License** for the code written in this 
 | **Npcap**      | Proprietary License                      | Must be installed separately; not redistributable without permission  |
 
 > ⚠️ If you distribute binaries, make sure you **do not bundle Npcap DLLs** unless you have a license. Users should install [Npcap](https://npcap.com/) themselves.
-
-----------
-
-## 🔹 Contact
-
-For inquiries, feedback, or contributions:
-
-- **Name:** Your Name
-- **Email:** your.email@example.com
-- **GitHub:** [https://github.com/yourusername](https://github.com/yourusername)
-
-----------
-
-## 🔹 Acknowledgments
-
-Special thanks to the developers of:
-
-- **ZeroMQ**
-- **OpenSSL**
-- **Zstd**
-- **librdkafka**
-- **libxml2**
-- **cJSON**
-- **WinPcap/Npcap**

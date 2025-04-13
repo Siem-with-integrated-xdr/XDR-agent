@@ -191,11 +191,7 @@ int main(void) {
 
     // Load XML configuration for Kafka
     Config config;
-    if (load_config("config.xml", &config) == 0) {
-        printf("Kafka Broker IP: %s\n", config.kafka_broker_ip);
-        printf("Kafka Broker Port: %d\n", config.kafka_broker_port);
-        printf("Kafka Topic: %s\n", config.kafka_topic);
-    } else {
+    if (load_config("config.xml", &config) != 0){
         fprintf(stderr, "Error loading configuration file. Using defaults.\n");
         log_error("Error loading configuration file. Using defaults.");
         strcpy(config.kafka_broker_ip, "localhost");
@@ -332,9 +328,6 @@ int main(void) {
                      "Failed to produce Kafka message: %s",
                      rd_kafka_err2str(rd_kafka_last_error()));
             log_error(kafka_err);
-        } else {
-            printf("Encrypted data of %d bytes sent to Kafka topic '%s'.\n",
-                   encrypted_size, config.kafka_topic);
         }
 
         // Free the encrypted data buffer (we used the copy flag)

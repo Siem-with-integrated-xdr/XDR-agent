@@ -1,4 +1,4 @@
-.PHONY: all network parent process compressor clean encryptor events health scanner integrity
+.PHONY: all network parent process compressor clean encryptor events health scanner integrity action
 
 CC = gcc
 CFLAGS = -Wall -g
@@ -48,6 +48,7 @@ EVENTS_TARGET = events_data_collector.exe
 HEALTH_TARGET = system_health.exe
 SCANNER_TARGET = file_scanner.exe
 INTEGRITY_TARGET = file_integrity.exe
+ACTION_TARGET = action.exe
 
 PARENT_SRC = parent.c
 PARENT_OBJ = $(PARENT_SRC:.c=.o)
@@ -75,6 +76,9 @@ SCANNER_OBJ = $(SCANNER_SRC:.c=.o)
 
 INTEGRITY_SRC = file_integrity.c
 INTEGRITY_OBJ = $(INTEGRITY_SRC:.c=.o)
+
+ACTION_SRC = action.c
+ACTION_OBJ = $(ACTION_SRC:.c=.o)
 
 # Rule for compiling  parent object file
 $(PARENT_OBJ): $(PARENT_SRC)
@@ -112,6 +116,10 @@ $(SCANNER_OBJ): $(SCANNER_SRC)
 $(INTEGRITY_OBJ): $(INTEGRITY_SRC)
 	$(CC) $(CFLAGS) $(ZMQ_INC) $(CJSON_INC) $(OPENSSL_INC) -c $< -o $@
 
+# Rule for compiling action object file
+$(ACTION_OBJ): $(ACTION_SRC)
+	$(CC) $(CFLAGS) $(CJSON_INC) $(ZMQ_INC) -c $< -o $@
+
 # Build for subprocess_manager.exe
 $(PARENT_TARGET): $(PARENT_OBJ)
 	$(CC) $(PARENT_OBJ) -o $(PARENT_TARGET) $(LDFLAGS)
@@ -148,8 +156,12 @@ $(SCANNER_TARGET): $(SCANNER_OBJ)
 $(INTEGRITY_TARGET): $(INTEGRITY_OBJ)
 	$(CC) $(INTEGRITY_OBJ) -o $(INTEGRITY_TARGET) $(ZMQ_LIB) $(CJSON_LIB) $(OPENSSL_LIB)
 
+# Build for action.exe
+$(ACTION_TARGET): $(ACTION_OBJ)
+	$(CC) $(ACTION_OBJ) -o $(ACTION_TARGET) $(CJSON_LIB) $(ZMQ_LIB)
+
 # Default target: build everything
-all: $(PARENT_TARGET) $(NETWORK_TARGET) $(PARENT_TARGET) $(PROCESS_TARGET) $(COMPRESSOR_TARGET) $(ENCRYPTOR_TARGET) $(EVENTS_TARGET) $(HEALTH_TARGET) $(SCANNER_TARGET) $(INTEGRITY_TARGET)
+all: $(PARENT_TARGET) $(NETWORK_TARGET) $(PARENT_TARGET) $(PROCESS_TARGET) $(COMPRESSOR_TARGET) $(ENCRYPTOR_TARGET) $(EVENTS_TARGET) $(HEALTH_TARGET) $(SCANNER_TARGET) $(INTEGRITY_TARGET) $(ACTION_TARGET)
 
 # Build only the network_collector
 network: $(NETWORK_TARGET)
@@ -178,5 +190,8 @@ scanner: $(SCANNER_TARGET)
 # Build only the integrity
 integrity: $(INTEGRITY_TARGET)
 
+# Build only the action
+action: $(ACTION_TARGET)
+
 clean:
-	del $(PARENT_OBJ) $(PARENT_TARGET) $(NETWORK_OBJ) $(NETWORK_TARGET) $(PROCESS_OBJ) $(PROCESS_TARGET) $(COMPRESSOR_OBJ) $(COMPRESSOR_TARGET) $(ENCRYPTOR_OBJ) $(ENCRYPTOR_TARGET) $(EVENTS_OBJ) $(EVENTS_TARGET) $(HELTH_OBJ) $(HELTH_TARGET) $(SCANNER_OBJ) $(SCANNER_TARGET) $(INTEGRITY_OBJ) $(INTEGRITY_TARGET)
+	del $(PARENT_OBJ) $(PARENT_TARGET) $(NETWORK_OBJ) $(NETWORK_TARGET) $(PROCESS_OBJ) $(PROCESS_TARGET) $(COMPRESSOR_OBJ) $(COMPRESSOR_TARGET) $(ENCRYPTOR_OBJ) $(ENCRYPTOR_TARGET) $(EVENTS_OBJ) $(EVENTS_TARGET) $(HELTH_OBJ) $(HELTH_TARGET) $(SCANNER_OBJ) $(SCANNER_TARGET) $(INTEGRITY_OBJ) $(INTEGRITY_TARGET) $(ACTION_OBJ) $(ACTION_TARGET)

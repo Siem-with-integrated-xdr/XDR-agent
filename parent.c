@@ -4,7 +4,7 @@
 #include <signal.h>
 #include <time.h>
 
-#define NUM_PROCESSES 8
+#define NUM_PROCESSES 9
 #define LOG_FILE "parent.log"
 
 // List of process executables
@@ -16,7 +16,8 @@ const char *processes[NUM_PROCESSES] = {
     "network_collector.exe",
     "system_health.exe",
     "file_scanner.exe",
-    "file_integrity.exe"
+    "file_integrity.exe",
+    "action.exe"
 };
 
 // Global variables for process information

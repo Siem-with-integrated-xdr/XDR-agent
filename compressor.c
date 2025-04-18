@@ -1,13 +1,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <zmq.h>
-#include <zstd.h>
 #include <signal.h>
 #include <time.h>
 #include <stdarg.h>
+#include <zmq.h>
+#include <zstd.h>
+#include <cjson/cJSON.h>
+#include <pcap.h>
+#include <Winsock2.h>
+#include <Ws2tcpip.h>
 
-// Logging function that writes timestamped messages to compresso.log
+// simple filter for which interfaces to ignore
+int is_valid_interface(const char *desc) {
+    if (!desc) return 0;
+    if (strstr(desc, "WAN Miniport") ||
+        strstr(desc, "Virtual")      ||
+        strstr(desc, "Loopback")     ||
+        strstr(desc, "Bluetooth"))
+        return 0;
+    return 1;
+}
+
+// Logging helper
 void log_error(const char *format, ...) {
     FILE *logFile = fopen("compressor.log", "a");
     if (!logFile) {
@@ -17,11 +32,11 @@ void log_error(const char *format, ...) {
     time_t now = time(NULL);
     struct tm *tm_info = localtime(&now);
     char time_buf[64];
-    if (tm_info != NULL) {
+    if (tm_info) {
         strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
     } else {
         strncpy(time_buf, "N/A", sizeof(time_buf));
-        time_buf[sizeof(time_buf) - 1] = '\0';
+        time_buf[sizeof(time_buf)-1] = '\0';
     }
     fprintf(logFile, "[%s] ", time_buf);
     va_list args;
@@ -32,126 +47,143 @@ void log_error(const char *format, ...) {
     fclose(logFile);
 }
 
-// Signal handler to catch fatal signals and log them
+// catch fatal signals
 void signal_handler(int signum) {
     log_error("Program terminated by signal: %d", signum);
     exit(EXIT_FAILURE);
 }
 
+// retrieve hostname + first non-loopback IPv4 via pcap
+void get_host_info(char *name_buf, size_t name_len, char *ip_buf, size_t ip_len) {
+    // 1) hostname
+    if (gethostname(name_buf, (int)name_len) != 0) {
+        strncpy(name_buf, "unknown", name_len);
+        name_buf[name_len-1] = '\0';
+    }
+
+    // 2) find via pcap
+    pcap_if_t *alldevs = NULL, *d;
+    char errbuf[PCAP_ERRBUF_SIZE];
+    if (pcap_findalldevs(&alldevs, errbuf) != 0) {
+        log_error("pcap_findalldevs failed: %s", errbuf);
+        goto fallback;
+    }
+    for (d = alldevs; d; d = d->next) {
+        if (!is_valid_interface(d->description)) continue;
+        for (pcap_addr_t *a = d->addresses; a; a = a->next) {
+            if (a->addr && a->addr->sa_family == AF_INET) {
+                struct sockaddr_in *sin = (struct sockaddr_in*)a->addr;
+                if (inet_ntop(AF_INET, &sin->sin_addr, ip_buf, ip_len)) {
+                    pcap_freealldevs(alldevs);
+                    return;
+                }
+            }
+        }
+    }
+    pcap_freealldevs(alldevs);
+
+fallback:
+    // fallback if nothing found
+    strncpy(ip_buf, "127.0.0.1", ip_len);
+    ip_buf[ip_len-1] = '\0';
+}
+
 int main(void) {
-    // Register signal handlers for common fatal signals.
     signal(SIGSEGV, signal_handler);
     signal(SIGABRT, signal_handler);
-    signal(SIGFPE, signal_handler);
-    signal(SIGILL, signal_handler);
+    signal(SIGFPE,  signal_handler);
+    signal(SIGILL,  signal_handler);
+    log_error("Program started");
 
+    // ZeroMQ setup
+    void *ctx = zmq_ctx_new();
+    if (!ctx) { log_error("zmq_ctx_new: %s", zmq_strerror(zmq_errno())); return EXIT_FAILURE; }
 
-    // Create a ZeroMQ context.
-    void *context = zmq_ctx_new();
-    if (!context) {
-        log_error("Error creating ZeroMQ context: %s", zmq_strerror(zmq_errno()));
-        return EXIT_FAILURE;
-    }
-    
-    // Create a PULL socket for receiving messages.
-    void *receiver = zmq_socket(context, ZMQ_PULL);
-    if (!receiver) {
-        log_error("Error creating ZeroMQ receiver socket: %s", zmq_strerror(zmq_errno()));
-        zmq_ctx_destroy(context);
-        return EXIT_FAILURE;
-    }
-    if (zmq_bind(receiver, "tcp://*:5555") != 0) {
-        log_error("Error binding receiver socket to endpoint: %s", zmq_strerror(zmq_errno()));
-        zmq_close(receiver);
-        zmq_ctx_destroy(context);
-        return EXIT_FAILURE;
-    }
-    
-    // Create a PUSH socket for sending compressed data.
-    void *sender = zmq_socket(context, ZMQ_PUSH);
-    if (!sender) {
-        log_error("Error creating ZeroMQ sender socket: %s", zmq_strerror(zmq_errno()));
-        zmq_close(receiver);
-        zmq_ctx_destroy(context);
-        return EXIT_FAILURE;
-    }
-    // Use zmq_connect() for the sender socket.
-    if (zmq_connect(sender, "tcp://localhost:5556") != 0) {
-        log_error("Error connecting sender socket to endpoint: %s", zmq_strerror(zmq_errno()));
-        zmq_close(sender);
-        zmq_close(receiver);
-        zmq_ctx_destroy(context);
-        return EXIT_FAILURE;
+    void *pull = zmq_socket(ctx, ZMQ_PULL);
+    if (!pull) { log_error("zmq_socket(PULL): %s", zmq_strerror(zmq_errno())); zmq_ctx_destroy(ctx); return EXIT_FAILURE; }
+    if (zmq_bind(pull, "tcp://*:5555") != 0) {
+        log_error("zmq_bind(PULL): %s", zmq_strerror(zmq_errno()));
+        zmq_close(pull); zmq_ctx_destroy(ctx); return EXIT_FAILURE;
     }
 
-    // Continuously receive, compress, and send messages.
+    void *push = zmq_socket(ctx, ZMQ_PUSH);
+    if (!push) { log_error("zmq_socket(PUSH): %s", zmq_strerror(zmq_errno())); zmq_close(pull); zmq_ctx_destroy(ctx); return EXIT_FAILURE; }
+    if (zmq_connect(push, "tcp://localhost:5556") != 0) {
+        log_error("zmq_connect(PUSH): %s", zmq_strerror(zmq_errno()));
+        zmq_close(push); zmq_close(pull); zmq_ctx_destroy(ctx); return EXIT_FAILURE;
+    }
+
+    log_error("Listening on 5555 -> compress -> send to 5556");
+
     while (1) {
-        zmq_msg_t msg;
-        if (zmq_msg_init(&msg) != 0) {
-            log_error("Error initializing message: %s", zmq_strerror(zmq_errno()));
+        zmq_msg_t in;
+        if (zmq_msg_init(&in) != 0) { log_error("zmq_msg_init: %s", zmq_strerror(zmq_errno())); break; }
+        if (zmq_msg_recv(&in, pull, 0) == -1) {
+            log_error("zmq_msg_recv: %s", zmq_strerror(zmq_errno()));
+            zmq_msg_close(&in);
             break;
         }
 
-        // Receive a message from a PUSH sender.
-        int rc = zmq_msg_recv(&msg, receiver, 0);
-        if (rc == -1) {
-            log_error("Error receiving message: %s", zmq_strerror(zmq_errno()));
-            zmq_msg_close(&msg);
-            break;
+        size_t in_sz = zmq_msg_size(&in);
+        char *in_buf = malloc(in_sz+1);
+        if (!in_buf) { log_error("malloc(in_buf) failed"); zmq_msg_close(&in); break; }
+        memcpy(in_buf, zmq_msg_data(&in), in_sz);
+        in_buf[in_sz] = '\0';
+
+        // wrap JSON
+        char host[256], ip[64];
+        get_host_info(host, sizeof(host), ip, sizeof(ip));
+        cJSON *arr  = cJSON_CreateArray();
+        cJSON *info = cJSON_CreateObject();
+        cJSON_AddStringToObject(info, "computer_name", host);
+        cJSON_AddStringToObject(info, "computer_ip",   ip);
+        cJSON_AddItemToArray(arr, info);
+
+        cJSON *orig = cJSON_Parse(in_buf);
+        if (!orig) {
+            log_error("cJSON_Parse failed, wrapping raw");
+            orig = cJSON_CreateString(in_buf);
         }
+        cJSON_AddItemToArray(arr, orig);
+        free(in_buf);
 
-        // Retrieve the data and its size from the zmq_msg.
-        char *data = (char *)zmq_msg_data(&msg);
-        size_t data_len = zmq_msg_size(&msg);
+        char *wrapped = cJSON_Print(arr);
+        cJSON_Delete(arr);
+        if (!wrapped) { log_error("cJSON_Print failed"); break; }
 
-        // Allocate memory for the compressed data.
-        size_t bound = ZSTD_compressBound(data_len);
-        void *compressed_data = malloc(bound);
-        if (!compressed_data) {
-            log_error("Memory allocation failed for compression buffer");
-            zmq_msg_close(&msg);
-            break;
-        }
-
-        // Compress the data using Zstd.
-        int compressionLevel = 3;
-        size_t compressed_size = ZSTD_compress(compressed_data, bound, data, data_len, compressionLevel);
-        if (ZSTD_isError(compressed_size)) {
-            log_error("Compression error: %s", ZSTD_getErrorName(compressed_size));
-            free(compressed_data);
-            zmq_msg_close(&msg);
-            continue;  // Skip this message and wait for the next one.
-        }
-
-        // Initialize a new message for the compressed data.
-        zmq_msg_t out_msg;
-        if (zmq_msg_init_size(&out_msg, compressed_size) != 0) {
-            log_error("Error initializing outgoing message: %s", zmq_strerror(zmq_errno()));
-            free(compressed_data);
-            zmq_msg_close(&msg);
+        // compress
+        size_t bound = ZSTD_compressBound(strlen(wrapped));
+        void *cmp = malloc(bound);
+        if (!cmp) { log_error("malloc(cmp) failed"); free(wrapped); break; }
+        size_t cmp_sz = ZSTD_compress(cmp, bound, wrapped, strlen(wrapped), 3);
+        free(wrapped);
+        if (ZSTD_isError(cmp_sz)) {
+            log_error("ZSTD_compress: %s", ZSTD_getErrorName(cmp_sz));
+            free(cmp);
+            zmq_msg_close(&in);
             continue;
         }
-        memcpy(zmq_msg_data(&out_msg), compressed_data, compressed_size);
 
-        // Send the compressed data.
-        if (zmq_msg_send(&out_msg, sender, 0) == -1) {
-            log_error("Error sending compressed message: %s", zmq_strerror(zmq_errno()));
-            zmq_msg_close(&out_msg);
-            free(compressed_data);
-            zmq_msg_close(&msg);
+        // send
+        zmq_msg_t out;
+        if (zmq_msg_init_size(&out, cmp_sz) != 0) {
+            log_error("zmq_msg_init_size: %s", zmq_strerror(zmq_errno()));
+            free(cmp); zmq_msg_close(&in);
             continue;
         }
-        zmq_msg_close(&out_msg);
+        memcpy(zmq_msg_data(&out), cmp, cmp_sz);
+        free(cmp);
 
-        // Clean up for this message.
-        free(compressed_data);
-        zmq_msg_close(&msg);
+        if (zmq_msg_send(&out, push, 0) == -1) {
+            log_error("zmq_msg_send: %s", zmq_strerror(zmq_errno()));
+        }
+        zmq_msg_close(&out);
+        zmq_msg_close(&in);
     }
 
-    // Cleanup resources on exit.
-    zmq_close(sender);
-    zmq_close(receiver);
-    zmq_ctx_destroy(context);
+    zmq_close(push);
+    zmq_close(pull);
+    zmq_ctx_destroy(ctx);
     log_error("Program terminated normally");
     return EXIT_SUCCESS;
 }

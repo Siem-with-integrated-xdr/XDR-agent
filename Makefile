@@ -94,7 +94,7 @@ $(PROCESS_OBJ): $(PROCESS_SRC)
 
 # Rule for compiling compressor object file
 $(COMPRESSOR_OBJ): $(COMPRESSOR_SRC)
-	$(CC) $(CFLAGS) $(ZMQ_INC) -c $< -o $@
+	$(CC) $(CFLAGS) $(ZMQ_INC) $(CJSON_INC) $(PCAP_INC) -c $< -o $@
 
 # Rule for compiling encryptor object file
 $(ENCRYPTOR_OBJ): $(ENCRYPTOR_SRC)
@@ -134,7 +134,7 @@ $(PROCESS_TARGET): $(PROCESS_OBJ)
 
 # Build for compressor.exe 
 $(COMPRESSOR_TARGET): $(COMPRESSOR_OBJ)
-	$(CC) $(COMPRESSOR_OBJ) -o $(COMPRESSOR_TARGET) $(ZMQ_LIB) $(ZLIB_LIB)
+	$(CC) $(COMPRESSOR_OBJ) -o $(COMPRESSOR_TARGET) $(ZMQ_LIB) $(ZLIB_LIB) $(CJSON_LIB) $(WIN32_LIB) $(PCAP_LIB)
 
 # Build for encryptor.exe
 $(ENCRYPTOR_TARGET): $(ENCRYPTOR_OBJ)

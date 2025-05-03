@@ -79,7 +79,6 @@ double getTimeInSeconds(FILETIME ft) {
 
 //------------------------------------------------------------------------------
 // Helper: Get the process owner (domain\username) as a string.
-// (Note: "OpenProcess" errors are not logged.)
 BOOL getProcessOwner(HANDLE hProcess, char *owner, DWORD ownerSize) {
     HANDLE hToken;
     if (!OpenProcessToken(hProcess, TOKEN_QUERY, &hToken)) {
@@ -144,7 +143,6 @@ DWORD getModuleCount(DWORD pid) {
 
 //------------------------------------------------------------------------------
 // Helper: Get the process executable path for a given process ID.
-// (Note: Errors from OpenProcess are not logged.)
 void getProcessPath(DWORD pid, char *szProcessPath, size_t size) {
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
     if (hProcess != NULL) {
@@ -187,7 +185,6 @@ cJSON* createProcessJsonDetailed(DWORD pid, DWORD ppid, const char* name, const 
     cJSON_AddStringToObject(procDetails, "working_set", working_set);
     cJSON_AddNumberToObject(procDetails, "thread_count", (double)thread_count);
     
-    // Additional details.
     cJSON_AddStringToObject(procDetails, "owner", owner);
     cJSON_AddNumberToObject(procDetails, "kernel_time", kernel_time);
     cJSON_AddNumberToObject(procDetails, "user_time", user_time);

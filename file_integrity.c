@@ -8,7 +8,7 @@
 #include <time.h>
 #include <openssl/evp.h>
 #include <zmq.h>
-#include "cJSON.h"  // Ensure cJSON.h is in your include path
+#include <cJSON.h>
 
 #define BUFFER_SIZE 8192
 
@@ -31,8 +31,6 @@ void handle_signal(int sig) {
 
 // Compute the SHA-256 hash of a file specified by filename.
 // The computed digest is written as a hexadecimal string into outputBuffer,
-// which must be at least (EVP_MAX_MD_SIZE*2)+1 bytes in length.
-// Returns 0 on success, -1 on error.
 int compute_file_hash(const char *filename, char *outputBuffer) {
     FILE *file = fopen(filename, "rb");
     if (!file) {
@@ -152,7 +150,7 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    // Connect to a ZeroMQ endpoint (adjust the address as needed).
+    // Connect to a ZeroMQ endpoint.
     if (zmq_connect(socket, "tcp://localhost:5555") != 0) {
         log_error("Failed to connect to ZeroMQ endpoint (tcp://localhost:5555)");
         zmq_close(socket);

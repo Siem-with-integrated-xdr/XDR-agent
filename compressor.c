@@ -101,7 +101,7 @@ int main(void) {
 
     void *pull = zmq_socket(ctx, ZMQ_PULL);
     if (!pull) { log_error("zmq_socket(PULL): %s", zmq_strerror(zmq_errno())); zmq_ctx_destroy(ctx); return EXIT_FAILURE; }
-    if (zmq_bind(pull, "tcp://*:5555") != 0) {
+    if (zmq_bind(pull, "tcp://localhost:5555") != 0) {
         log_error("zmq_bind(PULL): %s", zmq_strerror(zmq_errno()));
         zmq_close(pull); zmq_ctx_destroy(ctx); return EXIT_FAILURE;
     }
@@ -112,8 +112,6 @@ int main(void) {
         log_error("zmq_connect(PUSH): %s", zmq_strerror(zmq_errno()));
         zmq_close(push); zmq_close(pull); zmq_ctx_destroy(ctx); return EXIT_FAILURE;
     }
-
-    log_error("Listening on 5555 -> compress -> send to 5556");
 
     while (1) {
         zmq_msg_t in;

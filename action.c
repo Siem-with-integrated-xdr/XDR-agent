@@ -18,9 +18,9 @@ int main(void) {
     signal(SIGINT, signal_handler);
 
     // Fixed ZeroMQ endpoint.
-    const char *endpoint = "tcp://localhost:5557";
+    const char *endpoint = "tcp://*:5557";
 
-    // Create a ZeroMQ context.
+    // Create ZeroMQ context.
     void *zmq_context = zmq_ctx_new();
     if (!zmq_context) {
         log_error("Failed to create ZeroMQ context.");
@@ -102,7 +102,7 @@ int main(void) {
                 continue;
             }
 
-            // Execute the command.
+            // Execute the commands.
             int ret = system(cmd_item->valuestring);
             if (ret != 0) {
                 char logbuf[256];

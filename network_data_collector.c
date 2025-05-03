@@ -9,7 +9,10 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <signal.h>
-#include <zmq.h>   // ZeroMQ header
+#include <zmq.h>
+#include <libxml/parser.h>
+#include <libxml/tree.h>
+#include <ws2tcpip.h>
 
 #define MAX_PACKET_SIZE 65536
 #define MAX_BUFFER_SIZE 10   // Number of packets to buffer before sending to the analysis engine
@@ -97,6 +100,8 @@ struct packet_buffer {
     time_t last_flush_time;
 };
 
+static uint32_t g_server_ip = 0;
+
 // ---------------------- Global Resources & Cleanup ----------------------
 
 struct resources {
@@ -149,6 +154,8 @@ void cleanup_resources() {
         zmq_ctx_destroy(zmq_context);
         zmq_context = NULL;
     }
+
+    xmlCleanupParser();
 }
 
 // Log error messages to "network_log.log" with a timestamp.
@@ -176,6 +183,37 @@ void log_error(const char *format, ...) {
     fclose(logFile);
 }
 
+void load_server_ip(const char *xmlpath) {
+    xmlDoc *doc = xmlReadFile(xmlpath, NULL, 0);
+    if (!doc) {
+        fprintf(stderr, "Failed to parse %s\n", xmlpath);
+        return;
+    }
+
+    xmlNode *root = xmlDocGetRootElement(doc);
+    if (!root) {
+        log_error("Empty or invalid %s", xmlpath);
+        xmlFreeDoc(doc);
+        return;
+    }
+
+    for (xmlNode *k = root->children; k; k = k->next) {
+        if (k->type==XML_ELEMENT_NODE && !xmlStrcmp(k->name, (const xmlChar *)"kafka")) {
+            for (xmlNode *c = k->children; c; c = c->next) {
+                if (c->type==XML_ELEMENT_NODE && !xmlStrcmp(c->name, (const xmlChar*)"broker_ip")) {
+                    const char *txt = (const char*)xmlNodeGetContent(c);
+                    struct in_addr in;
+                    if (inet_pton(AF_INET, txt, &in)==1) {
+                        g_server_ip = in.s_addr;
+                    }
+                    xmlFree((xmlChar*)txt);
+                }
+            }
+        }
+    }
+    xmlFreeDoc(doc);
+}
+
 // Crash handler: logs the error, calls cleanup, and exits.
 void crash_handler(int sig) {
     log_error("Crash detected: signal %d", sig);
@@ -187,19 +225,19 @@ void crash_handler(int sig) {
 
 // Format IPv4 address into a string.
 void format_ipv4(uint32_t ip, char *buffer, size_t buflen) {
-    sprintf(buffer, "%d.%d.%d.%d", ip & 0xFF, (ip >> 8) & 0xFF,
+    snprintf(buffer, buflen, "%d.%d.%d.%d", ip & 0xFF, (ip >> 8) & 0xFF,
             (ip >> 16) & 0xFF, (ip >> 24) & 0xFF);
 }
 
 // Format MAC address into a string.
 void format_mac(const uint8_t *mac, char *buffer, size_t buflen) {
-    sprintf(buffer, "%02X:%02X:%02X:%02X:%02X:%02X",
+    snprintf(buffer, buflen, "%02X:%02X:%02X:%02X:%02X:%02X",
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
-// Format IPv6 address into a string (simple non-compressed format).
+// Format IPv6 address into a string.
 void format_ipv6(const unsigned char *addr, char *buffer, size_t buflen) {
-    sprintf(buffer,
+    snprintf(buffer, buflen,
             "%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X",
             addr[0], addr[1], addr[2], addr[3],
             addr[4], addr[5], addr[6], addr[7],
@@ -235,7 +273,7 @@ void format_timestamp(const struct pcap_pkthdr *header, char *buffer, size_t buf
     if (micro > 1000000)
         micro /= 1000;
     char usec[10];
-    sprintf(usec, ".%06ld", micro);
+    snprintf(usec, sizeof(usec), ".%06ld", micro);
     strncat(buffer, usec, buflen - strlen(buffer) - 1);
 }
 
@@ -277,7 +315,7 @@ char* process_buffer(struct packet_buffer *buffer) {
         global_ts[sizeof(global_ts) - 1] = '\0';
     }
     char usec_str[16];
-    sprintf(usec_str, ".%06ld", usec);
+    snprintf(usec_str, sizeof(usec_str), ".%06ld", usec);
     strncat(global_ts, usec_str, sizeof(global_ts) - strlen(global_ts) - 1);
     cJSON_AddItemToObject(root, "timestamp", cJSON_CreateString(global_ts));
     cJSON_AddItemToObject(root, "category", cJSON_CreateString("Network Packet"));
@@ -296,7 +334,7 @@ char* process_buffer(struct packet_buffer *buffer) {
         cJSON_AddItemToObject(packet_obj, "packet_timestamp", cJSON_CreateString(pkt_ts));
 
         // 2. Ether type.
-        if (header->len < sizeof(struct ethernet_header)) {
+        if (header->caplen < sizeof(struct ethernet_header)) {
             cJSON_AddItemToObject(packet_obj, "error", cJSON_CreateString("Packet too short for Ethernet header"));
             cJSON_AddItemToArray(packet_array, packet_obj);
             continue;
@@ -313,12 +351,12 @@ char* process_buffer(struct packet_buffer *buffer) {
         cJSON_AddItemToObject(packet_obj, "destination_mac", cJSON_CreateString(mac_buf));
 
         // 4. Packet size.
-        cJSON_AddItemToObject(packet_obj, "packet_size", cJSON_CreateNumber(header->len));
+        cJSON_AddItemToObject(packet_obj, "packet_size", cJSON_CreateNumber(header->caplen));
 
         // 5. Determine protocol (default "N/A")
         char protocol_str[16] = "N/A";
         if (eth_type == 0x0800) { // IPv4
-            if (header->len >= sizeof(struct ethernet_header) + sizeof(struct ip_header)) {
+            if (header->caplen >= sizeof(struct ethernet_header) + sizeof(struct ip_header)) {
                 struct ip_header *ip = (struct ip_header *)(packet + sizeof(struct ethernet_header));
                 switch (ip->protocol) {
                     case 6:  strcpy(protocol_str, "TCP"); break;
@@ -328,7 +366,7 @@ char* process_buffer(struct packet_buffer *buffer) {
                 }
             }
         } else if (eth_type == 0x86DD) { // IPv6
-            if (header->len >= sizeof(struct ethernet_header) + sizeof(struct ipv6_header)) {
+            if (header->caplen >= sizeof(struct ethernet_header) + sizeof(struct ipv6_header)) {
                 struct ipv6_header *ip6 = (struct ipv6_header *)(packet + sizeof(struct ethernet_header));
                 switch (ip6->next_header) {
                     case 6:  strcpy(protocol_str, "TCP"); break;
@@ -342,14 +380,14 @@ char* process_buffer(struct packet_buffer *buffer) {
 
         // 6. Process protocol-specific fields.
         if (eth_type == 0x0800) { // IPv4
-            if (header->len < sizeof(struct ethernet_header) + sizeof(struct ip_header)) {
+            if (header->caplen < sizeof(struct ethernet_header) + sizeof(struct ip_header)) {
                 cJSON_AddItemToObject(packet_obj, "error", cJSON_CreateString("Packet too short for IPv4 header"));
                 cJSON_AddItemToArray(packet_array, packet_obj);
                 continue;
             }
             struct ip_header *ip = (struct ip_header *)(packet + sizeof(struct ethernet_header));
             int ip_header_len = (ip->ihl_version & 0x0F) * 4;
-            if (header->len < sizeof(struct ethernet_header) + ip_header_len) {
+            if (header->caplen < sizeof(struct ethernet_header) + ip_header_len) {
                 cJSON_AddItemToObject(packet_obj, "error", cJSON_CreateString("Packet too short for IPv4 header with options"));
                 cJSON_AddItemToArray(packet_array, packet_obj);
                 continue;
@@ -366,14 +404,14 @@ char* process_buffer(struct packet_buffer *buffer) {
             cJSON_AddItemToObject(packet_obj, "ip_offset", cJSON_CreateNumber(ntohs(ip->offset)));
 
             if (ip->protocol == 6) {  // TCP
-                if (header->len < sizeof(struct ethernet_header) + ip_header_len + sizeof(struct tcp_header)) {
+                if (header->caplen < sizeof(struct ethernet_header) + ip_header_len + sizeof(struct tcp_header)) {
                     cJSON_AddItemToObject(packet_obj, "error", cJSON_CreateString("Packet too short for TCP header"));
                     cJSON_AddItemToArray(packet_array, packet_obj);
                     continue;
                 }
                 struct tcp_header *tcp = (struct tcp_header *)(packet + sizeof(struct ethernet_header) + ip_header_len);
                 int tcp_header_len = ((tcp->data_offset >> 4) * 4);
-                if (header->len < sizeof(struct ethernet_header) + ip_header_len + tcp_header_len) {
+                if (header->caplen < sizeof(struct ethernet_header) + ip_header_len + tcp_header_len) {
                     cJSON_AddItemToObject(packet_obj, "error", cJSON_CreateString("Packet too short for TCP header with options"));
                     cJSON_AddItemToArray(packet_array, packet_obj);
                     continue;
@@ -386,7 +424,7 @@ char* process_buffer(struct packet_buffer *buffer) {
                 cJSON_AddItemToObject(packet_obj, "window_size", cJSON_CreateNumber(ntohs(tcp->window)));
 
                 int payload_offset = sizeof(struct ethernet_header) + ip_header_len + tcp_header_len;
-                int payload_size = header->len - payload_offset;
+                int payload_size = header->caplen - payload_offset;
                 if (payload_size > 0) {
                     int payload_len = (payload_size < 16) ? payload_size : 16;
                     char payload[33] = {0};
@@ -396,7 +434,7 @@ char* process_buffer(struct packet_buffer *buffer) {
                     cJSON_AddItemToObject(packet_obj, "payload", cJSON_CreateString(payload));
                 }
             } else if (ip->protocol == 17) {  // UDP
-                if (header->len < sizeof(struct ethernet_header) + ip_header_len + sizeof(struct udp_header)) {
+                if (header->caplen < sizeof(struct ethernet_header) + ip_header_len + sizeof(struct udp_header)) {
                     cJSON_AddItemToObject(packet_obj, "error", cJSON_CreateString("Packet too short for UDP header"));
                     cJSON_AddItemToArray(packet_array, packet_obj);
                     continue;
@@ -407,7 +445,7 @@ char* process_buffer(struct packet_buffer *buffer) {
                 cJSON_AddItemToObject(packet_obj, "udp_length", cJSON_CreateNumber(ntohs(udp->length)));
 
                 int payload_offset = sizeof(struct ethernet_header) + ip_header_len + sizeof(struct udp_header);
-                int payload_size = header->len - payload_offset;
+                int payload_size = header->caplen - payload_offset;
                 if (payload_size > 0) {
                     int payload_len = (payload_size < 16) ? payload_size : 16;
                     char payload[33] = {0};
@@ -417,7 +455,7 @@ char* process_buffer(struct packet_buffer *buffer) {
                     cJSON_AddItemToObject(packet_obj, "payload", cJSON_CreateString(payload));
                 }
             } else if (ip->protocol == 1) {  // ICMP
-                if (header->len < sizeof(struct ethernet_header) + ip_header_len + sizeof(struct icmp_header)) {
+                if (header->caplen < sizeof(struct ethernet_header) + ip_header_len + sizeof(struct icmp_header)) {
                     cJSON_AddItemToObject(packet_obj, "error", cJSON_CreateString("Packet too short for ICMP header"));
                     cJSON_AddItemToArray(packet_array, packet_obj);
                     continue;
@@ -427,7 +465,7 @@ char* process_buffer(struct packet_buffer *buffer) {
                 cJSON_AddItemToObject(packet_obj, "icmp_code", cJSON_CreateNumber(icmp->code));
 
                 int payload_offset = sizeof(struct ethernet_header) + ip_header_len + sizeof(struct icmp_header);
-                int payload_size = header->len - payload_offset;
+                int payload_size = header->caplen - payload_offset;
                 if (payload_size > 0) {
                     int payload_len = (payload_size < 16) ? payload_size : 16;
                     char payload[33] = {0};
@@ -439,7 +477,7 @@ char* process_buffer(struct packet_buffer *buffer) {
             }
         }
         else if (eth_type == 0x86DD) { // IPv6
-            if (header->len < sizeof(struct ethernet_header) + sizeof(struct ipv6_header)) {
+            if (header->caplen < sizeof(struct ethernet_header) + sizeof(struct ipv6_header)) {
                 cJSON_AddItemToObject(packet_obj, "error", cJSON_CreateString("Packet too short for IPv6 header"));
                 cJSON_AddItemToArray(packet_array, packet_obj);
                 continue;
@@ -453,14 +491,14 @@ char* process_buffer(struct packet_buffer *buffer) {
             cJSON_AddItemToObject(packet_obj, "ttl", cJSON_CreateNumber(ip6->hop_limit));
             cJSON_AddItemToObject(packet_obj, "payload_length", cJSON_CreateNumber(ntohs(ip6->payload_length)));
             if (ip6->next_header == 6) {  // TCP
-                if (header->len < sizeof(struct ethernet_header) + 40 + sizeof(struct tcp_header)) {
+                if (header->caplen < sizeof(struct ethernet_header) + 40 + sizeof(struct tcp_header)) {
                     cJSON_AddItemToObject(packet_obj, "error", cJSON_CreateString("Packet too short for IPv6 TCP header"));
                     cJSON_AddItemToArray(packet_array, packet_obj);
                     continue;
                 }
                 struct tcp_header *tcp = (struct tcp_header *)(packet + sizeof(struct ethernet_header) + 40);
                 int tcp_header_len = ((tcp->data_offset >> 4) * 4);
-                if (header->len < sizeof(struct ethernet_header) + 40 + tcp_header_len) {
+                if (header->caplen < sizeof(struct ethernet_header) + 40 + tcp_header_len) {
                     cJSON_AddItemToObject(packet_obj, "error", cJSON_CreateString("Packet too short for IPv6 TCP header with options"));
                     cJSON_AddItemToArray(packet_array, packet_obj);
                     continue;
@@ -469,7 +507,7 @@ char* process_buffer(struct packet_buffer *buffer) {
                 cJSON_AddItemToObject(packet_obj, "destination_port", cJSON_CreateNumber(ntohs(tcp->dest_port)));
                 cJSON_AddItemToObject(packet_obj, "tcp_flags", cJSON_CreateNumber(tcp->flags));
                 int payload_offset = sizeof(struct ethernet_header) + 40 + tcp_header_len;
-                int payload_size = header->len - payload_offset;
+                int payload_size = header->caplen - payload_offset;
                 if (payload_size > 0) {
                     int payload_len = (payload_size < 16) ? payload_size : 16;
                     char payload[33] = {0};
@@ -480,7 +518,7 @@ char* process_buffer(struct packet_buffer *buffer) {
                 }
             }
             else if (ip6->next_header == 17) {  // UDP
-                if (header->len < sizeof(struct ethernet_header) + 40 + sizeof(struct udp_header)) {
+                if (header->caplen < sizeof(struct ethernet_header) + 40 + sizeof(struct udp_header)) {
                     cJSON_AddItemToObject(packet_obj, "error", cJSON_CreateString("Packet too short for IPv6 UDP header"));
                     cJSON_AddItemToArray(packet_array, packet_obj);
                     continue;
@@ -489,7 +527,7 @@ char* process_buffer(struct packet_buffer *buffer) {
                 cJSON_AddItemToObject(packet_obj, "source_port", cJSON_CreateNumber(ntohs(udp->src_port)));
                 cJSON_AddItemToObject(packet_obj, "destination_port", cJSON_CreateNumber(ntohs(udp->dest_port)));
                 int payload_offset = sizeof(struct ethernet_header) + 40 + sizeof(struct udp_header);
-                int payload_size = header->len - payload_offset;
+                int payload_size = header->caplen - payload_offset;
                 if (payload_size > 0) {
                     int payload_len = (payload_size < 16) ? payload_size : 16;
                     char payload[33] = {0};
@@ -500,7 +538,7 @@ char* process_buffer(struct packet_buffer *buffer) {
                 }
             }
             else if (ip6->next_header == 58) {  // ICMPv6
-                if (header->len < sizeof(struct ethernet_header) + 40 + sizeof(struct icmp6_header)) {
+                if (header->caplen < sizeof(struct ethernet_header) + 40 + sizeof(struct icmp6_header)) {
                     cJSON_AddItemToObject(packet_obj, "error", cJSON_CreateString("Packet too short for IPv6 ICMP header"));
                     cJSON_AddItemToArray(packet_array, packet_obj);
                     continue;
@@ -509,7 +547,7 @@ char* process_buffer(struct packet_buffer *buffer) {
                 cJSON_AddItemToObject(packet_obj, "icmp_type", cJSON_CreateNumber(icmp6->type));
                 cJSON_AddItemToObject(packet_obj, "icmp_code", cJSON_CreateNumber(icmp6->code));
                 int payload_offset = sizeof(struct ethernet_header) + 40 + sizeof(struct icmp6_header);
-                int payload_size = header->len - payload_offset;
+                int payload_size = header->caplen - payload_offset;
                 if (payload_size > 0) {
                     int payload_len = (payload_size < 16) ? payload_size : 16;
                     char payload[33] = {0};
@@ -536,6 +574,18 @@ char* process_buffer(struct packet_buffer *buffer) {
 // ---------------------- Packet Handler ----------------------
 
 void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
+    
+    if (header->caplen >= sizeof(struct ethernet_header) + sizeof(struct ip_header)) {
+        struct ethernet_header *eth = (struct ethernet_header*)packet;
+        if (ntohs(eth->eth_type) == 0x0800 && g_server_ip != 0) {
+            struct ip_header *ip = (struct ip_header*)(packet + sizeof(*eth));
+            if (ip->src_ip == g_server_ip || ip->dest_ip == g_server_ip) {
+                // drop it
+                return;
+            }
+        }
+    }
+
     struct packet_buffer *buffer = (struct packet_buffer *)args;
     struct captured_packet *cp = malloc(sizeof(struct captured_packet));
     if (!cp) {
@@ -560,7 +610,7 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
     if (buffer->packet_count < MAX_BUFFER_SIZE) {
         buffer->packets[buffer->packet_count] = cp;
         buffer->packet_count++;
-        buffer->total_size += header->len;
+        buffer->total_size += header->caplen;
     } else {
         // Buffer full: process and send JSON via ZeroMQ using zmq_msg_t.
         char *json_output = process_buffer(buffer);
@@ -582,7 +632,7 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header, const u_char
         buffer->last_flush_time = time(NULL);
         buffer->packets[buffer->packet_count] = cp;
         buffer->packet_count++;
-        buffer->total_size += header->len;
+        buffer->total_size += header->caplen;
     }
 
     time_t current_time = time(NULL);
@@ -637,6 +687,8 @@ int main() {
     }
     g_resources.winsock_initialized = 1;
 #endif
+
+    load_server_ip("config.xml");
 
     char errbuf[PCAP_ERRBUF_SIZE];
 
@@ -697,7 +749,7 @@ int main() {
         cleanup_resources();
         return 1;
     }
-    // Connect to the next stage endpoint (adjust as needed).
+    // Connect to the next stage endpoint.
     if (zmq_connect(zmq_sender, "tcp://localhost:5555") != 0) {
         log_error("Failed to connect ZeroMQ sender socket.");
         fprintf(stderr, "Failed to connect ZeroMQ sender socket.\n");

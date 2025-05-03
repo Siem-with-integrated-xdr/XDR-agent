@@ -6,12 +6,12 @@
 #include <stdarg.h>
 #include <time.h>
 #include <stdint.h>
-#include "zmq.h"
-#include "cJSON.h"
+#include <zmq.h>
+#include <cJSON.h>
 
 #define BUFFER_SIZE 65536
 #define MAX_RETRY 5
-#define ZMQ_ENDPOINT "tcp://127.0.0.1:5555"
+#define ZMQ_ENDPOINT "tcp://localhost:5555"
 
 // Global resources used by the whole program.
 static void *g_context = NULL;  // Global ZeroMQ context (shared among threads)
@@ -77,7 +77,6 @@ uint64_t get_precise_time_microseconds() {
 }
 
 // A simple Base64 encoding function.
-// (For production code, consider using a well‑tested library.)
 char *base64_encode(const unsigned char *data, size_t input_length, size_t *output_length) {
     const char encoding_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     const char pad = '=';

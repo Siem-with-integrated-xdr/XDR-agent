@@ -86,7 +86,7 @@ $(PARENT_OBJ): $(PARENT_SRC)
 
 # Rule for compiling network object file
 $(NETWORK_OBJ): $(NETWORK_SRC)
-	$(CC) $(CFLAGS) $(CJSON_INC) $(PCAP_INC) $(ZMQ_INC) -c $< -o $@
+	$(CC) $(CFLAGS) $(CJSON_INC) $(PCAP_INC) $(ZMQ_INC) $(LIBXML2_INC) -c $< -o $@
 
 # Rule for compiling process object file
 $(PROCESS_OBJ): $(PROCESS_SRC)
@@ -126,7 +126,7 @@ $(PARENT_TARGET): $(PARENT_OBJ)
 
 # Build for network_collector.exe
 $(NETWORK_TARGET): $(NETWORK_OBJ)
-	$(CC) $(NETWORK_OBJ) -o $(NETWORK_TARGET) $(CJSON_LIB) $(PCAP_LIB) $(ZMQ_LIB) $(WIN32_LIB)
+	$(CC) $(NETWORK_OBJ) -o $(NETWORK_TARGET) $(CJSON_LIB) $(PCAP_LIB) $(ZMQ_LIB) $(WIN32_LIB) $(LIBXML2_LIB)
 
 # Build for processes_collector.exe
 $(PROCESS_TARGET): $(PROCESS_OBJ)

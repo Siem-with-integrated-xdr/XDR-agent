@@ -6,8 +6,8 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <signal.h>
-#include "cJSON.h"
-#include "zmq.h"
+#include <cJSON.h>
+#include <zmq.h>
 
 // Global resources for cleanup.
 static void *g_context = NULL;
@@ -144,8 +144,8 @@ int main(void) {
         exit(EXIT_FAILURE);
     }
     
-    // Connect to the endpoint. Adjust as needed.
-    if (zmq_connect(g_socket, "tcp://127.0.0.1:5555") != 0) {
+    // Connect to the endpoint.
+    if (zmq_connect(g_socket, "tcp://localhost:5555") != 0) {
         log_message("zmq_connect error: %s", zmq_strerror(errno));
         cleanup();
         exit(EXIT_FAILURE);

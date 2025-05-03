@@ -7,7 +7,7 @@
 #include <time.h>
 #include <openssl/evp.h>
 #include <openssl/err.h>
-#include <rdkafka.h>   // Kafka producer
+#include <rdkafka.h>
 #include <libxml/parser.h>
 #include <libxml/tree.h>
 
@@ -105,7 +105,7 @@ int aes_encrypt(const unsigned char *plaintext, int plaintext_len,
 typedef struct {
     char kafka_broker_ip[64];
     int kafka_broker_port;
-    char kafka_topic[64];  // New field for Kafka topic
+    char kafka_topic[64];
 } Config;
 
 // ---------------------------------------------------------------------------
@@ -198,8 +198,12 @@ int main(void) {
         config.kafka_broker_port = 9092;
         strcpy(config.kafka_topic, "encrypted_topic");
     }
+    printf(">>> loaded kafka_broker_ip = \"%s\"\n", config.kafka_broker_ip);
+    printf(">>> loaded kafka_broker_port = %d\n", config.kafka_broker_port);
+    printf(">>> loaded kafka_topic = \"%s\"\n", config.kafka_topic);
+
     
-    // Build the bootstrap servers string (e.g., "localhost:9092")
+    // Build the bootstrap servers string
     char bootstrap_servers[128];
     snprintf(bootstrap_servers, sizeof(bootstrap_servers), "%s:%d", 
              config.kafka_broker_ip, config.kafka_broker_port);
@@ -218,8 +222,8 @@ int main(void) {
         zmq_ctx_destroy(context);
         return EXIT_FAILURE;
     }
-    // Bind to port 5556 (adjust if needed)
-    if (zmq_bind(receiver, "tcp://*:5556") != 0) {
+    // Bind to port 5556
+    if (zmq_bind(receiver, "tcp://localhost:5556") != 0) {
         char buf[256];
         snprintf(buf, sizeof(buf), "Failed to bind PULL socket: %s", zmq_strerror(errno));
         log_error(buf);
@@ -337,7 +341,7 @@ int main(void) {
         rd_kafka_poll(rk, 0);
     }
 
-    // Cleanup (this section is reached when you exit the loop)
+    // Cleanup 
     rd_kafka_flush(rk, 10000);  // Wait up to 10 seconds for message delivery
     rd_kafka_topic_destroy(rkt);
     rd_kafka_destroy(rk);

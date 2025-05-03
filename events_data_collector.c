@@ -167,7 +167,7 @@ DWORD WINAPI SubscriptionCallback(EVT_SUBSCRIBE_NOTIFY_ACTION action, PVOID pCon
             char *jsonString = cJSON_Print(jsonEvent);
             if (jsonString) {
                 // Send the JSON message via ZeroMQ to the specified endpoint.
-                if (send_json_via_zmq(jsonString, "tcp://127.0.0.1:5555") != 0) {
+                if (send_json_via_zmq(jsonString, "tcp://localhost:5555") != 0) {
                     fwprintf(logFile, L"Failed to send JSON via ZeroMQ\n");
                 }
                 free(jsonString);
